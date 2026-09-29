@@ -1,0 +1,7 @@
+name = "car-rental-portal"
+compatibility_date = "2024-09-23"
+pages_build_output_dir = "./dist"
+
+[vars]
+ENVIRONMENT = "production"
+APP_NAME = "DriveEase Car Rental Platform"
