@@ -17,6 +17,42 @@ export const App: React.FC = () => {
     return saved ? JSON.parse(saved) : INITIAL_VEHICLES;
   });
 
+  // Fetch live fleet data from Cloudflare D1 on start
+  useEffect(() => {
+    fetch('/api/vehicles')
+      .then((res) => {
+        if (!res.ok) throw new Error('API request failed');
+        return res.json();
+      })
+      .then((json) => {
+        if (json.data && Array.isArray(json.data) && json.data.length > 0) {
+          // Normalize D1 keys to camelCase if needed
+          const normalized: Vehicle[] = json.data.map((r: any) => ({
+            id: r.id,
+            plateNumber: r.plate_number || r.plateNumber,
+            brand: r.brand,
+            model: r.model,
+            year: r.year_manufactured || r.year,
+            category: r.category,
+            transmission: r.transmission,
+            seats: r.seats,
+            dailyRate: r.daily_rate || r.dailyRate,
+            status: r.status,
+            fuelType: r.fuel_type || r.fuelType,
+            mileage: r.current_mileage || r.mileage || 0,
+            fuelLevel: r.fuel_level !== undefined ? r.fuel_level : 100,
+            branch: r.branch_name || r.branch || 'สาขาสนามบินสุวรรณภูมิ',
+            imageUrl: r.image_url || r.imageUrl,
+            features: typeof r.features === 'string' ? JSON.parse(r.features || '[]') : r.features,
+          }));
+          setVehicles(normalized);
+        }
+      })
+      .catch((err) => {
+        console.warn('Using local vehicle cache due to:', err.message);
+      });
+  }, []);
+
   // Load bookings from localStorage or default initial booking
   const [bookings, setBookings] = useState<Booking[]>(() => {
     const saved = localStorage.getItem('driveease_bookings');
@@ -77,9 +113,11 @@ export const App: React.FC = () => {
       prev.map((v) => (v.id === newBooking.vehicleId ? { ...v, status: 'reserved' } : v))
     );
 
-    const vehicle = vehicles.find((v) => v.id === newBooking.vehicleId)!;
+    const vehicle = vehicles.find((v) => v.id === newBooking.vehicleId);
     setSelectedVehicleForBooking(null);
-    setConfirmedBookingData({ booking: newBooking, vehicle });
+    if (vehicle) {
+      setConfirmedBookingData({ booking: newBooking, vehicle });
+    }
   };
 
   // Handle Handover Check-In
@@ -114,11 +152,84 @@ export const App: React.FC = () => {
     );
   };
 
-  // Handle Fleet Manual Status Update
-  const handleUpdateVehicleStatus = (vehicleId: string, status: VehicleStatus) => {
+  // Handle Fleet Status Update
+  const handleUpdateVehicleStatus = async (vehicleId: string, status: VehicleStatus) => {
     setVehicles((prev) =>
       prev.map((v) => (v.id === vehicleId ? { ...v, status } : v))
     );
+
+    try {
+      await fetch('/api/vehicles', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ id: vehicleId, status }),
+      });
+    } catch (e) {
+      console.error('Failed to sync status update to D1:', e);
+    }
+  };
+
+  // CRUD Handler 1: INSERT (Add new vehicle)
+  const handleAddVehicle = async (newVehicle: Vehicle) => {
+    // 1. Optimistic update
+    setVehicles((prev) => [newVehicle, ...prev]);
+
+    // 2. Sync to Cloudflare D1
+    try {
+      const res = await fetch('/api/vehicles', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(newVehicle),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to insert to D1');
+      alert('เพิ่มยานพาหนะเข้าสู่ฐานข้อมูล D1 สำเร็จเรียบร้อย!');
+    } catch (err: any) {
+      console.error('Error saving vehicle to D1:', err);
+      alert(`บันทึกในเครื่องเรียบร้อย (D1 sync error: ${err.message})`);
+    }
+  };
+
+  // CRUD Handler 2: UPDATE (Edit vehicle)
+  const handleEditVehicle = async (updatedVehicle: Vehicle) => {
+    // 1. Optimistic update
+    setVehicles((prev) =>
+      prev.map((v) => (v.id === updatedVehicle.id ? updatedVehicle : v))
+    );
+
+    // 2. Sync to Cloudflare D1
+    try {
+      const res = await fetch('/api/vehicles', {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updatedVehicle),
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to update in D1');
+      alert('อัปเดตข้อมูลยานพาหนะในฐานข้อมูล D1 สำเร็จ!');
+    } catch (err: any) {
+      console.error('Error updating vehicle in D1:', err);
+      alert(`อัปเดตในเครื่องเรียบร้อย (D1 sync error: ${err.message})`);
+    }
+  };
+
+  // CRUD Handler 3: DELETE (Remove vehicle)
+  const handleDeleteVehicle = async (vehicleId: string) => {
+    // 1. Optimistic update
+    setVehicles((prev) => prev.filter((v) => v.id !== vehicleId));
+
+    // 2. Sync to Cloudflare D1
+    try {
+      const res = await fetch(`/api/vehicles?id=${vehicleId}`, {
+        method: 'DELETE',
+      });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'Failed to delete from D1');
+      alert('ลบยานพาหนะออกจากฐานข้อมูล D1 สำเร็จ!');
+    } catch (err: any) {
+      console.error('Error deleting vehicle from D1:', err);
+      alert(`ลบออกจากหน้าจอเรียบร้อย (D1 sync: ${err.message})`);
+    }
   };
 
   const activeBookingsCount = bookings.filter(
@@ -177,6 +288,9 @@ export const App: React.FC = () => {
                 vehicles={vehicles}
                 bookings={bookings}
                 onUpdateVehicleStatus={handleUpdateVehicleStatus}
+                onAddVehicle={handleAddVehicle}
+                onEditVehicle={handleEditVehicle}
+                onDeleteVehicle={handleDeleteVehicle}
               />
             )}
           </>
@@ -197,7 +311,7 @@ export const App: React.FC = () => {
       <footer className="bg-white border-t border-slate-200 py-6 mt-12">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-4 text-xs text-slate-500">
           <div>
-            © 2026 DriveEase Car Rental Platform. All rights reserved. (Developed with Clean Architecture & Cloudflare Pages)
+            © 2026 DriveEase Car Rental Platform. All rights reserved. (Cloudflare D1 & Pages Production)
           </div>
           <div className="flex gap-4">
             <span className="hover:text-slate-800 cursor-pointer">เงื่อนไขการเช่า</span>
