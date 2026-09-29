@@ -5,3 +5,8 @@ pages_build_output_dir = "./dist"
 [vars]
 ENVIRONMENT = "production"
 APP_NAME = "DriveEase Car Rental Platform"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "car-rental-db"
+database_id = "f1b82c34-1cd9-40e0-a766-51b2e16e8afa"
