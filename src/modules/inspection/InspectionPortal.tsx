@@ -15,6 +15,13 @@ import {
   ShieldAlert,
 } from 'lucide-react';
 
+import {
+  calculateLatePenalty,
+  calculateFuelPenalty,
+  calculateDepositSettlement,
+  BUSINESS_RULES,
+} from '../../domain/services/pricingService';
+
 interface InspectionPortalProps {
   bookings: Booking[];
   vehicles: Vehicle[];
@@ -61,25 +68,23 @@ export const InspectionPortal: React.FC<InspectionPortalProps> = ({
     );
   }
 
-  // Penalty Calculation (BR-04, BR-05)
-  // BR-04: Grace period 1 hr free, 1-4 hrs hourly rate (dailyRate / 8), >4 hrs 1 full day
+  // Pure Domain Calculations (BR-04, BR-05)
   const dailyRate = selectedBooking?.dailyRate || 1000;
-  let calculatedLateFee = 0;
-  if (lateHours > 1 && lateHours <= 4) {
-    calculatedLateFee = Math.ceil(lateHours) * Math.round(dailyRate / 8);
-  } else if (lateHours > 4) {
-    calculatedLateFee = dailyRate;
-  }
-
-  // BR-05: Fuel shortage policy (100% - returnFuel) * 25 THB + 200 THB service fee
-  const fuelShortage = Math.max(0, 100 - returnFuel);
-  const fuelShortageFee = fuelShortage > 0 ? fuelShortage * 25 + 200 : 0;
-  const totalPenalty = calculatedLateFee + fuelShortageFee;
-  const depositAmount = selectedBooking?.depositAmount || 5000;
-  const depositRefunded = Math.max(0, depositAmount - totalPenalty);
+  const calculatedLateFee = calculateLatePenalty(lateHours, dailyRate);
+  const { penaltyFee: fuelShortageFee } = calculateFuelPenalty(returnFuel);
+  const depositAmount = selectedBooking?.depositAmount || BUSINESS_RULES.BOOKING.DEFAULT_SECURITY_DEPOSIT;
+  const { totalPenalty, refundedAmount: depositRefunded } = calculateDepositSettlement(
+    depositAmount,
+    calculatedLateFee,
+    fuelShortageFee
+  );
 
   const handleSubmitCheckIn = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedBooking || !vehicle) {
+      alert('ไม่พบข้อมูลการจองหรือข้อมูลยานพาหนะ');
+      return;
+    }
     if (!signatureCheckIn) {
       alert('กรุณาให้ลูกค้าลงลายมือชื่อดิจิทัลก่อนยืนยันส่งมอบรถ');
       return;
@@ -87,8 +92,8 @@ export const InspectionPortal: React.FC<InspectionPortalProps> = ({
 
     const record: InspectionRecord = {
       id: `insp-in-${Date.now()}`,
-      bookingId: selectedBooking!.id,
-      vehicleId: vehicle!.id,
+      bookingId: selectedBooking.id,
+      vehicleId: vehicle.id,
       type: 'check_in',
       inspectorName: 'จนท. วิชัย สุขเกษม (Counter Staff)',
       mileage: checkInMileage,
@@ -104,12 +109,16 @@ export const InspectionPortal: React.FC<InspectionPortalProps> = ({
       inspectedAt: new Date().toISOString(),
     };
 
-    onCompleteCheckIn(selectedBooking!.id, record);
+    onCompleteCheckIn(selectedBooking.id, record);
     alert('ส่งมอบรถและตรวจรับดิจิทัลสำเร็จ! สถานะรถเปลี่ยนเป็น "อยู่ระหว่างเช่า"');
   };
 
   const handleSubmitCheckOut = (e: React.FormEvent) => {
     e.preventDefault();
+    if (!selectedBooking || !vehicle) {
+      alert('ไม่พบข้อมูลการจองหรือข้อมูลยานพาหนะ');
+      return;
+    }
     if (!signatureCheckOut) {
       alert('กรุณาให้ลูกค้าลงลายมือชื่อดิจิทัลยืนยันการรับคืนรถ');
       return;
@@ -117,8 +126,8 @@ export const InspectionPortal: React.FC<InspectionPortalProps> = ({
 
     const record: InspectionRecord = {
       id: `insp-out-${Date.now()}`,
-      bookingId: selectedBooking!.id,
-      vehicleId: vehicle!.id,
+      bookingId: selectedBooking.id,
+      vehicleId: vehicle.id,
       type: 'check_out',
       inspectorName: 'จนท. วิชัย สุขเกษม (Counter Staff)',
       mileage: returnMileage,
