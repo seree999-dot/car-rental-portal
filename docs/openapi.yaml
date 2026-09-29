@@ -1,0 +1,327 @@
+openapi: 3.1.0
+info:
+  title: DriveEase Car Rental Core API
+  version: 1.0.0
+  description: RESTful API for Car Rental, Digital Handover, and Fleet Management platform.
+servers:
+  - url: https://api.driveease.com/api/v1
+    description: Production Edge API (Cloudflare)
+  - url: http://localhost:3000/api/v1
+    description: Local Development Server
+
+paths:
+  /vehicles:
+    get:
+      summary: Search and list available vehicles
+      operationId: listVehicles
+      tags: [Vehicles]
+      parameters:
+        - name: branch_id
+          in: query
+          required: false
+          schema:
+            type: string
+            format: uuid
+        - name: start_time
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: end_time
+          in: query
+          required: false
+          schema:
+            type: string
+            format: date-time
+        - name: category
+          in: query
+          required: false
+          schema:
+            type: string
+            enum: [sedan, suv, ev, luxury]
+        - name: page
+          in: query
+          schema:
+            type: integer
+            default: 1
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            default: 20
+      responses:
+        '200':
+          description: List of vehicles with pagination
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/VehicleListResponse'
+
+  /bookings:
+    post:
+      summary: Create a temporary vehicle reservation (15-minute hold)
+      operationId: createBooking
+      tags: [Bookings]
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+            format: uuid
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CreateBookingRequest'
+      responses:
+        '201':
+          description: Reservation created successfully with 15-minute hold timer
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+        '400':
+          $ref: '#/components/responses/ValidationError'
+        '409':
+          description: Vehicle already reserved or conflicting time slot
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ErrorResponse'
+
+  /bookings/{id}/payments:
+    post:
+      summary: Confirm payment and authorize security deposit
+      operationId: processPayment
+      tags: [Bookings, Payments]
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema:
+            type: string
+            format: uuid
+        - name: Idempotency-Key
+          in: header
+          required: true
+          schema:
+            type: string
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [payment_method, payment_token]
+              properties:
+                payment_method:
+                  type: string
+                  enum: [credit_card, promptpay]
+                payment_token:
+                  type: string
+      responses:
+        '200':
+          description: Payment captured and deposit pre-authorized
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BookingResponse'
+
+  /inspections/check-in:
+    post:
+      summary: Staff executes Handover & Check-in inspection
+      operationId: executeCheckIn
+      tags: [Inspections]
+      security:
+        - BearerAuth: [staff, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckInInspectionRequest'
+      responses:
+        '200':
+          description: Vehicle handed over successfully, status changed to Rented
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InspectionRecordResponse'
+
+  /inspections/check-out:
+    post:
+      summary: Staff executes Return & Check-out inspection with automatic penalty calculation
+      operationId: executeCheckOut
+      tags: [Inspections]
+      security:
+        - BearerAuth: [staff, admin]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/CheckOutInspectionRequest'
+      responses:
+        '200':
+          description: Vehicle returned, penalty deducted, deposit released
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/InspectionRecordResponse'
+
+components:
+  securitySchemes:
+    BearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    VehicleListResponse:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Vehicle'
+        pagination:
+          type: object
+          properties:
+            page: { type: integer }
+            limit: { type: integer }
+            total: { type: integer }
+            total_pages: { type: integer }
+
+    Vehicle:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        plate_number: { type: string }
+        brand: { type: string }
+        model: { type: string }
+        year: { type: integer }
+        category: { type: string, enum: [sedan, suv, ev, luxury] }
+        transmission: { type: string, enum: [auto, manual] }
+        seats: { type: integer }
+        daily_rate: { type: number, format: float }
+        status: { type: string, enum: [available, reserved, rented, maintenance] }
+        current_mileage: { type: integer }
+        fuel_level: { type: integer }
+        branch_id: { type: string, format: uuid }
+
+    CreateBookingRequest:
+      type: object
+      required:
+        - vehicle_id
+        - customer
+        - pickup_branch_id
+        - return_branch_id
+        - start_time
+        - end_time
+      properties:
+        vehicle_id: { type: string, format: uuid }
+        pickup_branch_id: { type: string, format: uuid }
+        return_branch_id: { type: string, format: uuid }
+        start_time: { type: string, format: date-time }
+        end_time: { type: string, format: date-time }
+        with_insurance: { type: boolean, default: true }
+        customer:
+          type: object
+          required: [full_name, email, phone, national_id, driver_license_number, date_of_birth]
+          properties:
+            full_name: { type: string }
+            email: { type: string, format: email }
+            phone: { type: string }
+            date_of_birth: { type: string, format: date }
+            national_id: { type: string }
+            driver_license_number: { type: string }
+
+    BookingResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        booking_code: { type: string }
+        status: { type: string }
+        total_days: { type: integer }
+        daily_rate: { type: number }
+        rental_fee: { type: number }
+        insurance_fee: { type: number }
+        deposit_amount: { type: number }
+        total_amount: { type: number }
+        hold_expires_at: { type: string, format: date-time }
+        qr_code_url: { type: string }
+
+    CheckInInspectionRequest:
+      type: object
+      required: [booking_id, mileage, fuel_level, photos, signature_url]
+      properties:
+        booking_id: { type: string, format: uuid }
+        mileage: { type: integer }
+        fuel_level: { type: integer, minimum: 0, maximum: 100 }
+        photos:
+          type: object
+          required: [front, back, left, right]
+          properties:
+            front: { type: string }
+            back: { type: string }
+            left: { type: string }
+            right: { type: string }
+        damages: { type: array, items: { type: string } }
+        signature_url: { type: string }
+
+    CheckOutInspectionRequest:
+      type: object
+      required: [booking_id, mileage, fuel_level, photos, signature_url]
+      properties:
+        booking_id: { type: string, format: uuid }
+        mileage: { type: integer }
+        fuel_level: { type: integer, minimum: 0, maximum: 100 }
+        late_hours: { type: number, default: 0 }
+        photos:
+          type: object
+          properties:
+            front: { type: string }
+            back: { type: string }
+            left: { type: string }
+            right: { type: string }
+        signature_url: { type: string }
+
+    InspectionRecordResponse:
+      type: object
+      properties:
+        id: { type: string, format: uuid }
+        booking_id: { type: string, format: uuid }
+        inspection_type: { type: string, enum: [check_in, check_out] }
+        mileage_recorded: { type: integer }
+        fuel_level_recorded: { type: integer }
+        late_fee: { type: number }
+        fuel_shortage_fee: { type: number }
+        total_penalty_deducted: { type: number }
+        deposit_refunded: { type: number }
+        inspected_at: { type: string, format: date-time }
+
+    ErrorResponse:
+      type: object
+      required: [code, message, trace_id]
+      properties:
+        code: { type: string, example: "VEHICLE_UNAVAILABLE" }
+        message: { type: string, example: "รถยนต์คันนี้ติดการจองในช่วงเวลาที่เลือกแล้ว" }
+        details:
+          type: array
+          items:
+            type: object
+            properties:
+              field: { type: string }
+              issue: { type: string }
+        trace_id: { type: string, example: "req-9a8b7c-1234" }
+
+  responses:
+    ValidationError:
+      description: Invalid request payload
+      content:
+        application/json:
+          schema:
+            $ref: '#/components/schemas/ErrorResponse'
